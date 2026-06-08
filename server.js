@@ -18,8 +18,8 @@ const origins = [
 
 // ── Middleware ────────────────────────────────────────────────
 app.use(cors({
-  origin: (origin, cb) => cb(null, true), // allow all origins
-  credentials: true,
+  origin: '*', // allow all origins
+  credentials: false,
   methods: ['GET','POST','PUT','DELETE','OPTIONS','PATCH'],
   allowedHeaders: ['Content-Type','Authorization'],
 }));
