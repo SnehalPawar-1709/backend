@@ -1,24 +1,13 @@
 // ============================================================
 // MEMORA - Email Service
 // Sends professional HTML email + PDF summary attachment
+// Uses Resend (HTTPS API) instead of SMTP — works on Render free tier
 // ============================================================
-const nodemailer = require('nodemailer');
+const { Resend } = require('resend');
 
-const isConfigured = () => {
-  const u = (process.env.EMAIL_USER || '').trim();
-  const p = (process.env.EMAIL_PASS || '').replace(/\s/g, '');
-  return u.includes('@') && p.length >= 16;
-};
+const isConfigured = () => !!(process.env.RESEND_API_KEY || '').trim();
 
-const makeTransport = () => nodemailer.createTransport({
-  host: 'smtp.gmail.com', port: 587, secure: false,
-  auth: {
-    user: (process.env.EMAIL_USER || '').trim(),
-    pass: (process.env.EMAIL_PASS || '').replace(/\s/g, ''),
-  },
-  connectionTimeout: 15000,
-  socketTimeout:     30000,
-});
+const resend = () => new Resend(process.env.RESEND_API_KEY);
 
 // ── Generate PDF buffer using PDFKit ─────────────────────────
 const generatePDF = (data) => {
@@ -342,19 +331,10 @@ const sendSummaryEmails = async (data) => {
     // Continue without PDF if generation fails
   }
 
-  // Verify SMTP
-  let transport;
-  try {
-    transport = makeTransport();
-    await transport.verify();
-    console.log(`SMTP verified — sending to ${emails.length} recipients`);
-  } catch(e) {
-    console.error('SMTP verify failed:', e.message);
-    return { sent: 0, failed: emails.length, error: e.message, log: [] };
-  }
+  console.log(`Resend configured — sending to ${emails.length} recipients`);
 
   const pdfName = `meeting-summary-${data.meetingId}.pdf`;
-  const from    = `"${(process.env.EMAIL_FROM_NAME || 'Memora').trim()}" <${(process.env.EMAIL_USER || '').trim()}>`;
+  const from    = `${(process.env.EMAIL_FROM_NAME || 'Memora').trim()} <onboarding@resend.dev>`;
   const subject = `Meeting Summary — ${data.topic}`;
   const html    = buildHTML(data);
   const text    = buildText(data);
@@ -363,9 +343,8 @@ const sendSummaryEmails = async (data) => {
   const attachments = [];
   if (pdfBuffer) {
     attachments.push({
-      filename:    pdfName,
-      content:     pdfBuffer,
-      contentType: 'application/pdf',
+      filename: pdfName,
+      content:  pdfBuffer.toString('base64'),
     });
   }
 
@@ -374,7 +353,8 @@ const sendSummaryEmails = async (data) => {
 
   for (const email of emails) {
     try {
-      await transport.sendMail({ from, to: email, subject, html, text, attachments });
+      const result = await resend().emails.send({ from, to: email, subject, html, text, attachments });
+      if (result.error) throw new Error(result.error.message);
       console.log(`✓ Email sent → ${email}`);
       log.push({ email, status: 'sent', sentAt: new Date() });
       sent++;
@@ -388,15 +368,10 @@ const sendSummaryEmails = async (data) => {
   return { sent, failed, log };
 };
 
-// ── SMTP test ─────────────────────────────────────────────────
+// ── Resend config test ───────────────────────────────────────
 const testEmail = async () => {
-  if (!isConfigured()) return { ok: false, message: 'EMAIL_USER or EMAIL_PASS not set in .env' };
-  try {
-    await makeTransport().verify();
-    return { ok: true, message: `SMTP verified for ${process.env.EMAIL_USER}` };
-  } catch(e) {
-    return { ok: false, message: e.message };
-  }
+  if (!isConfigured()) return { ok: false, message: 'RESEND_API_KEY not set in env' };
+  return { ok: true, message: 'Resend API key is configured' };
 };
 
 module.exports = { sendSummaryEmails, testEmail };
