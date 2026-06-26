@@ -1,13 +1,14 @@
 // ============================================================
 // MEMORA - Email Service
 // Sends professional HTML email + PDF summary attachment
-// Uses Resend (HTTPS API) instead of SMTP — works on Render free tier
+// Uses Brevo (Sendinblue) HTTPS API — works on Render free tier,
+// and can send to ANY recipient without domain verification.
 // ============================================================
-const { Resend } = require('resend');
+const axios = require('axios');
 
-const isConfigured = () => !!(process.env.RESEND_API_KEY || '').trim();
+const isConfigured = () => !!(process.env.BREVO_API_KEY || '').trim();
 
-const resend = () => new Resend(process.env.RESEND_API_KEY);
+const BREVO_SEND_URL = 'https://api.brevo.com/v3/smtp/email';
 
 // ── Generate PDF buffer using PDFKit ─────────────────────────
 const generatePDF = (data) => {
@@ -331,20 +332,21 @@ const sendSummaryEmails = async (data) => {
     // Continue without PDF if generation fails
   }
 
-  console.log(`Resend configured — sending to ${emails.length} recipients`);
+  console.log(`Brevo configured — sending to ${emails.length} recipients`);
 
   const pdfName = `meeting-summary-${data.meetingId}.pdf`;
-  const from    = `${(process.env.EMAIL_FROM_NAME || 'Memora').trim()} <onboarding@resend.dev>`;
+  const senderEmail = (process.env.EMAIL_USER || '').trim();
+  const senderName  = (process.env.EMAIL_FROM_NAME || 'Memora').trim();
   const subject = `Meeting Summary — ${data.topic}`;
   const html    = buildHTML(data);
   const text    = buildText(data);
 
-  // Build attachments array
-  const attachments = [];
+  // Build Brevo-style attachment (base64 content)
+  const attachment = [];
   if (pdfBuffer) {
-    attachments.push({
-      filename: pdfName,
-      content:  pdfBuffer.toString('base64'),
+    attachment.push({
+      name:    pdfName,
+      content: pdfBuffer.toString('base64'),
     });
   }
 
@@ -353,14 +355,32 @@ const sendSummaryEmails = async (data) => {
 
   for (const email of emails) {
     try {
-      const result = await resend().emails.send({ from, to: email, subject, html, text, attachments });
-      if (result.error) throw new Error(result.error.message);
-      console.log(`✓ Email sent → ${email}`);
+      const response = await axios.post(
+        BREVO_SEND_URL,
+        {
+          sender:      { name: senderName, email: senderEmail },
+          to:          [{ email }],
+          subject,
+          htmlContent: html,
+          textContent: text,
+          attachment:  attachment.length ? attachment : undefined,
+        },
+        {
+          headers: {
+            'api-key':      process.env.BREVO_API_KEY,
+            'Content-Type': 'application/json',
+            'Accept':       'application/json',
+          },
+          timeout: 20000,
+        }
+      );
+      console.log(`✓ Email sent → ${email} (messageId: ${response.data?.messageId || 'n/a'})`);
       log.push({ email, status: 'sent', sentAt: new Date() });
       sent++;
     } catch(e) {
-      console.error(`✗ Email failed → ${email}: ${e.message}`);
-      log.push({ email, status: 'failed', error: e.message, sentAt: new Date() });
+      const errMsg = e.response?.data?.message || e.message;
+      console.error(`✗ Email failed → ${email}: ${errMsg}`);
+      log.push({ email, status: 'failed', error: errMsg, sentAt: new Date() });
       failed++;
     }
   }
@@ -368,10 +388,19 @@ const sendSummaryEmails = async (data) => {
   return { sent, failed, log };
 };
 
-// ── Resend config test ───────────────────────────────────────
+// ── Brevo config test ────────────────────────────────────────
 const testEmail = async () => {
-  if (!isConfigured()) return { ok: false, message: 'RESEND_API_KEY not set in env' };
-  return { ok: true, message: 'Resend API key is configured' };
+  if (!isConfigured()) return { ok: false, message: 'BREVO_API_KEY not set in env' };
+  try {
+    // Lightweight check: fetch account info to confirm the key works
+    const response = await axios.get('https://api.brevo.com/v3/account', {
+      headers: { 'api-key': process.env.BREVO_API_KEY },
+      timeout: 10000,
+    });
+    return { ok: true, message: `Brevo API key is valid for account: ${response.data?.email || 'unknown'}` };
+  } catch(e) {
+    return { ok: false, message: e.response?.data?.message || e.message };
+  }
 };
 
 module.exports = { sendSummaryEmails, testEmail };
